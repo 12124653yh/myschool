@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 interface GuestbookEntry {
   id: string;
   nickname: string;
   content: string;
-  createdAt: string;
+  created_at: string;
 }
 
 export default function GuestbookPage() {
@@ -17,14 +18,16 @@ export default function GuestbookPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Fetch entries from server memory API
+  // Supabase DB에서 방명록 목록 불러오기
   const fetchEntries = async () => {
     try {
-      const res = await fetch("/api/guestbook", { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        setEntries(data.entries || []);
-      }
+      const { data, error } = await supabase
+        .from("guestbook")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+      setEntries(data || []);
     } catch {
       setErrorMsg("방명록을 불러오는 데 실패했습니다.");
     } finally {
@@ -34,6 +37,32 @@ export default function GuestbookPage() {
 
   useEffect(() => {
     fetchEntries();
+
+    // Supabase Realtime 구독 설정 (새 글 등록 시 실시간 수신)
+    const channel = supabase
+      .channel("guestbook-realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "guestbook",
+        },
+        (payload) => {
+          const newEntry = payload.new as GuestbookEntry;
+          setEntries((prev) => {
+            if (prev.some((entry) => entry.id === newEntry.id)) {
+              return prev;
+            }
+            return [newEntry, ...prev];
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -51,20 +80,26 @@ export default function GuestbookPage() {
     setErrorMsg("");
 
     try {
-      const res = await fetch("/api/guestbook", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nickname, content }),
-      });
+      const { data, error } = await supabase
+        .from("guestbook")
+        .insert([
+          {
+            nickname: nickname.trim().slice(0, 20),
+            content: content.trim().slice(0, 300),
+          },
+        ])
+        .select()
+        .single();
 
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || "등록에 실패했습니다.");
-      }
+      if (error) throw error;
 
-      const result = await res.json();
-      if (result.entry) {
-        setEntries((prev) => [result.entry, ...prev]);
+      if (data) {
+        setEntries((prev) => {
+          if (prev.some((entry) => entry.id === data.id)) {
+            return prev;
+          }
+          return [data as GuestbookEntry, ...prev];
+        });
         setContent("");
       }
     } catch (err: unknown) {
@@ -97,7 +132,7 @@ export default function GuestbookPage() {
       <section className="text-center sm:text-left space-y-2">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#1b4332]/10 text-[#1b4332] text-xs sm:text-sm font-semibold">
           <span>💌</span>
-          <span>따뜻한 소통의 공간</span>
+          <span>따뜻한 소통의 공간 · 실시간 연동 ⚡</span>
         </div>
         <h1 className="text-3xl sm:text-4xl font-extrabold text-[#1b4332] tracking-tight">
           응원 방명록
@@ -222,7 +257,7 @@ export default function GuestbookPage() {
                     {entry.nickname}
                   </span>
                   <span className="text-[#526156]">
-                    {formatDate(entry.createdAt)}
+                    {formatDate(entry.created_at)}
                   </span>
                 </div>
                 <p className="text-[#2d3748] text-sm leading-relaxed whitespace-pre-wrap">
